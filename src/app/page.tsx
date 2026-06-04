@@ -4,13 +4,13 @@ import { Terminal, Sparkles, Play, Code, Database, Bell, ArrowRight, ShieldCheck
 
 export default function LandingPage() {
   return (
-    <div className="relative min-h-screen flex flex-col justify-between overflow-hidden bg-[#070709] px-6 py-12 md:px-12">
+    <div className="relative min-h-screen flex flex-col items-center justify-between overflow-hidden bg-[#070709] py-12">
       {/* Dynamic light glows */}
       <div className="glow-bg top-[-100px] left-1/4 scale-90" />
       <div className="glow-bg-blue bottom-[-100px] right-1/4 scale-75" />
 
       {/* Header navbar */}
-      <header className="relative z-10 max-w-[1200px] w-full mx-auto flex items-center justify-between">
+      <header className="relative z-10 max-w-[1200px] w-full flex items-center justify-between px-6 md:px-12">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-xl flex items-center justify-center border border-violet-500/20 shadow-lg shadow-violet-500/10">
             <Terminal className="w-5 h-5 text-white" />
