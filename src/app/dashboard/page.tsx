@@ -375,7 +375,8 @@ export default function DashboardPage() {
       </header>
 
       {/* Main Workspace Layout */}
-      <main className="relative z-10 flex-1 grid grid-cols-1 lg:grid-cols-4 gap-8 p-6 md:p-8 max-w-[1600px] w-full mx-auto">
+      <main className="relative z-10 flex-1 flex justify-center p-6 md:p-8">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 max-w-[1600px] w-full">
         {/* Active Applications list */}
         <div className="lg:col-span-3 space-y-8">
           <div className="flex items-center justify-between">
@@ -563,6 +564,7 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+        </div>
         </div>
       </main>
 
