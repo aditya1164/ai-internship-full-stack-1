@@ -1,0 +1,343 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { getUserFromRequest } from "@/lib/auth";
+import { AppConfig, EntitySchema } from "@/lib/engine";
+import JSZip from "jszip";
+
+// Helper to map dynamic types to Prisma types
+function mapTypeToPrisma(type: string): string {
+  switch (type) {
+    case "number":
+      return "Float";
+    case "boolean":
+      return "Boolean";
+    case "date":
+      return "DateTime";
+    default:
+      return "String";
+  }
+}
+
+// Generate schema.prisma text based on entity config
+function generatePrismaSchema(appConfig: AppConfig): string {
+  let schema = `datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+`;
+
+  for (const entity of appConfig.entities) {
+    const modelName = entity.label.replace(/\s+/g, ""); // PascalCase name
+    schema += `\nmodel ${modelName} {\n  id String @id @default(uuid())\n`;
+
+    for (const field of entity.fields) {
+      if (field.name === "id") continue;
+      const prismaType = mapTypeToPrisma(field.type);
+      const isOptional = !field.required;
+      const isUnique = field.unique;
+      
+      schema += `  ${field.name} ${prismaType}${isOptional ? "?" : ""}${isUnique ? " @unique" : ""}\n`;
+    }
+
+    schema += `  createdAt DateTime @default(now())\n  updatedAt DateTime @updatedAt\n}\n`;
+  }
+
+  return schema;
+}
+
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: appId } = await params;
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const app = await prisma.application.findUnique({
+      where: { id: appId, userId: user.id },
+    });
+
+    if (!app) {
+      return NextResponse.json({ error: "Application not found" }, { status: 404 });
+    }
+
+    const appConfig = JSON.parse(app.config) as AppConfig;
+    const zip = new JSZip();
+
+    // 1. package.json
+    zip.file("package.json", JSON.stringify({
+      name: appConfig.name.toLowerCase().replace(/[^a-z0-9]/g, "-"),
+      version: "1.0.0",
+      private: true,
+      scripts: {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start",
+        "postinstall": "prisma generate"
+      },
+      dependencies: {
+        "next": "^14.2.0",
+        "react": "^18.3.0",
+        "react-dom": "^18.3.0",
+        "@prisma/client": "^5.12.0",
+        "lucide-react": "^0.368.0"
+      },
+      devDependencies: {
+        "prisma": "^5.12.0",
+        "typescript": "^5.4.0",
+        "@types/node": "^20.12.0",
+        "@types/react": "^18.2.0",
+        "@types/react-dom": "^18.2.0",
+        "autoprefixer": "^10.4.0",
+        "postcss": "^8.4.0",
+        "tailwindcss": "^3.4.0"
+      }
+    }, null, 2));
+
+    // 2. tsconfig.json
+    zip.file("tsconfig.json", JSON.stringify({
+      compilerOptions: {
+        target: "es5",
+        lib: ["dom", "dom.iterable", "esnext"],
+        allowJs: true,
+        skipLibCheck: true,
+        strict: true,
+        noEmit: true,
+        esModuleInterop: true,
+        module: "esnext",
+        moduleResolution: "bundler",
+        resolveJsonModule: true,
+        isolatedModules: true,
+        jsx: "preserve",
+        incremental: true,
+        plugins: [{ name: "next" }],
+        paths: { "@/*": ["./src/*"] }
+      },
+      include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+      exclude: ["node_modules"]
+    }, null, 2));
+
+    // 3. tailwind.config.ts
+    zip.file("tailwind.config.ts", `import type { Config } from "tailwindcss";
+const config: Config = {
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        primary: {
+          50: '#f0f9ff', 100: '#e0f2fe', 500: '#0284c7', 600: '#0369a1', 700: '#075985'
+        }
+      }
+    }
+  },
+  plugins: [],
+};
+export default config;`);
+
+    // 4. postcss.config.js
+    zip.file("postcss.config.js", `module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};`);
+
+    // 5. Prisma Schema
+    zip.file("prisma/schema.prisma", generatePrismaSchema(appConfig));
+
+    // 6. DB Connection Client
+    zip.file("src/lib/db.ts", `import { PrismaClient } from "@prisma/client";
+const globalForPrisma = global as unknown as { prisma: PrismaClient };
+export const db = globalForPrisma.prisma || new PrismaClient();
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = db;`);
+
+    // 7. Base Layout with styling
+    zip.file("src/app/layout.tsx", `import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import "./globals.css";
+
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "${appConfig.name}",
+  description: "Generated by AI App Generator",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en" className="h-full bg-slate-50">
+      <body className={\`\${inter.className} h-full\`}>
+        <div className="min-h-full flex flex-col">
+          <header className="bg-white border-b border-slate-200 py-4 px-6 flex items-center justify-between">
+            <h1 className="text-xl font-bold text-slate-800">${appConfig.name}</h1>
+            <span className="text-xs px-2 py-1 bg-slate-100 text-slate-600 rounded">Standalone Export</span>
+          </header>
+          <div className="flex-1 flex overflow-hidden">
+            <aside className="w-64 border-r border-slate-200 bg-white p-4 flex flex-col gap-2">
+              <a href="/" className="px-3 py-2 text-sm font-semibold rounded text-slate-700 hover:bg-slate-100">Dashboard</a>
+              <hr className="my-2 border-slate-200" />
+              <div className="text-xs font-bold text-slate-400 px-3 mb-1">Entities</div>
+              ${appConfig.entities.map(e => `
+              <a href="/${e.name}" className="px-3 py-2 text-sm rounded text-slate-600 hover:bg-slate-50">${e.label}s</a>
+              `).join("")}
+            </aside>
+            <main className="flex-1 p-8 overflow-y-auto">{children}</main>
+          </div>
+        </div>
+      </body>
+    </html>
+  );
+}`);
+
+    // 8. Globals CSS
+    zip.file("src/app/globals.css", `@tailwind base;
+@tailwind components;
+@tailwind utilities;`);
+
+    // 9. Dashboard Landing Page
+    zip.file("src/app/page.tsx", `import React from "react";
+import { db } from "@/lib/db";
+
+export default async function DashboardPage() {
+  // Pull counts for stats
+  ${appConfig.entities.map((e, idx) => {
+    const model = e.label.replace(/\s+/g, "");
+    return `  const count${idx} = await db.${model.charAt(0).toLowerCase() + model.slice(1)}.count().catch(() => 0);`;
+  }).join("\n")}
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900">Dashboard</h2>
+        <p className="text-sm text-slate-500">${appConfig.description || "Welcome to your exported application."}</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        ${appConfig.entities.map((e, idx) => `
+        <div className="bg-white p-6 rounded-lg border border-slate-200 shadow-sm">
+          <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider">${e.label}s</h3>
+          <p className="text-3xl font-extrabold text-slate-800 mt-2">{count${idx}}</p>
+          <a href="/${e.name}" className="text-xs font-medium text-blue-600 hover:underline mt-4 block">Manage ${e.label}s →</a>
+        </div>
+        `).join("")}
+      </div>
+    </div>
+  );
+}`);
+
+    // 10. Generate App Entity Pages and API Routes!
+    for (const entity of appConfig.entities) {
+      const modelPascal = entity.label.replace(/\s+/g, "");
+      const modelCamel = modelPascal.charAt(0).toLowerCase() + modelPascal.slice(1);
+      
+      // Page displaying listing / table
+      zip.file(`src/app/${entity.name}/page.tsx`, `import React from "react";
+import { db } from "@/lib/db";
+import { Plus } from "lucide-react";
+
+export default async function ${modelPascal}ListPage() {
+  const records = await db.${modelCamel}.findMany({
+    orderBy: { createdAt: "desc" }
+  }).catch(() => []);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900">${entity.label} Management</h2>
+          <p className="text-sm text-slate-500">View and manage ${entity.label.toLowerCase()} entries</p>
+        </div>
+        <a href="/${entity.name}/new" className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold shadow-sm transition">
+          <Plus size={16} /> Add ${entity.label}
+        </a>
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+        <table className="min-w-full divide-y divide-slate-200">
+          <thead className="bg-slate-50">
+            <tr>
+              ${entity.fields.map(f => `              <th className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase">${f.label}</th>`).join("\n")}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200 bg-white">
+            {records.length === 0 ? (
+              <tr>
+                <td colSpan={${entity.fields.length}} className="px-6 py-10 text-center text-sm text-slate-400">
+                  No records found. Click 'Add ${entity.label}' to get started.
+                </td>
+              </tr>
+            ) : (
+              records.map((r: any) => (
+                <tr key={r.id} className="hover:bg-slate-50">
+                  ${entity.fields.map(f => {
+                    if (f.type === "date") {
+                      return `                  <td className="px-6 py-4 text-sm text-slate-700">{r.${f.name} ? new Date(r.${f.name}).toLocaleDateString() : ""}</td>`;
+                    }
+                    if (f.type === "boolean") {
+                      return `                  <td className="px-6 py-4 text-sm text-slate-700">{r.${f.name} ? "Yes" : "No"}</td>`;
+                    }
+                    return `                  <td className="px-6 py-4 text-sm text-slate-700">{String(r.${f.name} ?? "")}</td>`;
+                  }).join("\n")}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}`);
+
+      // API route for CRUD
+      zip.file(`src/app/api/${entity.name}/route.ts`, `import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+
+export async function GET() {
+  try {
+    const records = await db.${modelCamel}.findMany({ orderBy: { createdAt: "desc" } });
+    return NextResponse.json({ success: true, records });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    // basic prisma insert
+    const newRecord = await db.${modelCamel}.create({ data: body });
+    return NextResponse.json({ success: true, record: newRecord });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 400 });
+  }
+}`);
+    }
+
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+
+    return new NextResponse(zipBlob, {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${appConfig.name.toLowerCase().replace(/[^a-z0-9]/g, "-")}-export.zip"`,
+      },
+    });
+  } catch (error) {
+    console.error("Export app error:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
